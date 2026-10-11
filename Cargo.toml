@@ -1,0 +1,10 @@
+[package]
+name = "video_compress_gui"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+eframe = "0.29"
+rfd = "0.15"
+
