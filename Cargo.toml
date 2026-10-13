@@ -8,3 +8,10 @@ build = "build.rs"
 eframe = "0.29"
 rfd = "0.15"
 
+# Réduit la taille du binaire distribué avec `cargo build --release`.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
