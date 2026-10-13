@@ -9,6 +9,11 @@ const DEFAULT_CRF: &str = "24";
 const VIDEO_CODEC: &str = "libx264";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const EMBEDDED_FFMPEG: &[u8] = include_bytes!(env!("EMBEDDED_FFMPEG_PATH"));
+const VIDEO_EXTENSIONS: &[&str] = &[
+    "mp4", "m4v", "mov", "qt", "mkv", "avi", "divx", "webm", "flv", "f4v", "wmv", "asf", "mpg",
+    "mpeg", "mpe", "mpv", "m2v", "ts", "mts", "m2ts", "vob", "3gp", "3g2", "ogv", "ogg", "mxf",
+    "rm", "rmvb",
+];
 
 fn main() -> eframe::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -40,7 +45,10 @@ fn run_gui() -> eframe::Result<()> {
     eframe::run_native(
         &app_title,
         options,
-        Box::new(|_cc| Ok(Box::<VideoCompressApp>::default())),
+        Box::new(|cc| {
+            cc.egui_ctx.set_visuals(egui::Visuals::light());
+            Ok(Box::<VideoCompressApp>::default())
+        }),
     )
 }
 
@@ -245,11 +253,11 @@ impl VideoCompressApp {
     }
 
     fn choose_input_file(&mut self) {
+        let extensions = video_filter_extensions();
         let Some(path) = FileDialog::new()
-            .add_filter(
-                "Videos",
-                &["mp4", "mov", "mkv", "avi", "webm", "m4v", "mts", "m2ts"],
-            )
+            .set_title("Seleziona un video")
+            .add_filter("Video", &extensions)
+            .add_filter("Tutti i file", &["*"])
             .pick_file()
         else {
             return;
@@ -342,6 +350,13 @@ impl VideoCompressApp {
     }
 }
 
+fn video_filter_extensions() -> Vec<String> {
+    VIDEO_EXTENSIONS
+        .iter()
+        .flat_map(|extension| [(*extension).to_owned(), extension.to_ascii_uppercase()])
+        .collect()
+}
+
 fn default_output_path(input: &Path) -> PathBuf {
     let stem = input
         .file_stem()
@@ -396,6 +411,12 @@ fn compress_video(input: &Path, output: &Path, crf: &str) -> Result<(), String> 
         .arg("-hide_banner")
         .arg("-i")
         .arg(input)
+        .arg("-map_metadata")
+        .arg("0")
+        .arg("-map_metadata:s")
+        .arg("0:s")
+        .arg("-map_chapters")
+        .arg("0")
         .arg("-c:v")
         .arg(VIDEO_CODEC)
         .arg("-preset")
