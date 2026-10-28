@@ -1,6 +1,6 @@
 [package]
-name = "video_compress_gui"
-version = "0.1.0"
+name = "easy_video_compressor"
+version = "0.2.0"
 edition = "2021"
 build = "build.rs"
 
@@ -8,7 +8,7 @@ build = "build.rs"
 eframe = "0.29"
 rfd = "0.15"
 
-# Réduit la taille du binaire distribué avec `cargo build --release`.
+# decrease buinary size `cargo build --release`.
 [profile.release]
 opt-level = "z"
 lto = true

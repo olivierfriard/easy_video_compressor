@@ -23,7 +23,7 @@ fn main() -> eframe::Result<()> {
         .first()
         .is_some_and(|arg| arg == "--version" || arg == "-V")
     {
-        println!("video_compress_gui {APP_VERSION}");
+        println!("easy_video_compressor {APP_VERSION}");
         return Ok(());
     }
     if args.first().is_some_and(|arg| arg == "--compress") {
@@ -56,7 +56,7 @@ fn run_gui() -> eframe::Result<()> {
 
 fn run_cli_compress(args: &[String]) {
     if args.is_empty() {
-        eprintln!("Usage: video_compress_gui --compress <input> [output] [crf]");
+        eprintln!("Usage: easy_video_compressor --compress <input> [output] [crf]");
         std::process::exit(2);
     }
 
@@ -183,7 +183,7 @@ impl eframe::App for VideoCompressApp {
             ui.horizontal(|ui| {
                 ui.add_enabled(
                     !self.running,
-                    egui::Checkbox::new(&mut self.crf_unlocked, "Sblocca CRF"),
+                    egui::Checkbox::new(&mut self.crf_unlocked, "Personalizza la compressione"),
                 );
                 ui.add_enabled(
                     !self.running && self.crf_unlocked,
@@ -462,7 +462,7 @@ fn embedded_ffmpeg_path() -> Result<PathBuf, String> {
     } else {
         format!("ffmpeg-{hash:016x}")
     };
-    let dir = std::env::temp_dir().join("video_compress_gui");
+    let dir = std::env::temp_dir().join("easy_video_compressor");
     let path = dir.join(executable_name);
 
     if path.is_file()
