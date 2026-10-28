@@ -39,7 +39,7 @@ fn run_gui() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(app_title.clone())
-            .with_inner_size([760.0, 360.0])
+            .with_inner_size([800.0, 430.0])
             .with_min_inner_size([640.0, 300.0]),
         ..Default::default()
     };
@@ -92,7 +92,19 @@ fn run_cli_compress(args: &[String]) {
     println!("Compressione completata: {}", output_path.display());
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum InputMode {
+    File,
+    Folder,
+}
+
+enum CompressionEvent {
+    Progress(String),
+    Finished(Result<PathBuf, String>),
+}
+
 struct VideoCompressApp {
+    mode: Option<InputMode>,
     input_path: String,
     output_path: String,
     crf: String,
@@ -100,12 +112,13 @@ struct VideoCompressApp {
     running: bool,
     crf_unlocked: bool,
     output_was_auto: bool,
-    receiver: Option<Receiver<Result<PathBuf, String>>>,
+    receiver: Option<Receiver<CompressionEvent>>,
 }
 
 impl Default for VideoCompressApp {
     fn default() -> Self {
         Self {
+            mode: None,
             input_path: String::new(),
             output_path: String::new(),
             crf: DEFAULT_CRF.to_owned(),
@@ -128,7 +141,28 @@ impl eframe::App for VideoCompressApp {
             ui.label(format!("Versione {APP_VERSION}"));
             ui.add_space(8.0);
 
-            ui.label("File sorgente");
+            ui.add_enabled_ui(!self.running, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Cosa vuoi comprimere?");
+                    let previous = self.mode;
+                    ui.selectable_value(&mut self.mode, Some(InputMode::File), "File");
+                    ui.selectable_value(&mut self.mode, Some(InputMode::Folder), "Cartella");
+                    if self.mode != previous {
+                        self.input_path.clear();
+                        self.output_path.clear();
+                        self.output_was_auto = true;
+                        self.status = "Seleziona la sorgente da comprimere.".to_owned();
+                    }
+                });
+            });
+            let Some(mode) = self.mode else {
+                ui.add_space(16.0);
+                ui.label("Scegli File per un singolo video oppure Cartella per tutti i video di una cartella.");
+                return;
+            };
+            let folder_mode = mode == InputMode::Folder;
+            ui.add_space(8.0);
+            ui.label(if folder_mode { "Cartella sorgente" } else { "File sorgente" });
             ui.horizontal(|ui| {
                 let button_width = 110.0;
                 let spacing = ui.spacing().item_spacing.x;
@@ -136,7 +170,7 @@ impl eframe::App for VideoCompressApp {
                 let response = ui.add_enabled(
                     !self.running,
                     egui::TextEdit::singleline(&mut self.input_path)
-                        .hint_text("/percorso/video.mp4")
+                        .hint_text(if folder_mode { "/percorso/cartella" } else { "/percorso/video.mp4" })
                         .desired_width(text_width),
                 );
                 if response.changed() && self.output_was_auto {
@@ -154,13 +188,13 @@ impl eframe::App for VideoCompressApp {
             });
 
             ui.add_space(6.0);
-            ui.label("File di uscita");
+            ui.label(if folder_mode { "Cartella di uscita (automatica)" } else { "File di uscita" });
             ui.horizontal(|ui| {
                 let button_width = 145.0;
                 let spacing = ui.spacing().item_spacing.x;
                 let text_width = (ui.available_width() - button_width - spacing).max(225.0);
                 let response = ui.add_enabled(
-                    !self.running,
+                    !self.running && !folder_mode,
                     egui::TextEdit::singleline(&mut self.output_path)
                         .hint_text("Automatico se vuoto")
                         .desired_width(text_width),
@@ -170,7 +204,7 @@ impl eframe::App for VideoCompressApp {
                 }
                 if ui
                     .add_enabled(
-                        !self.running,
+                        !self.running && !folder_mode,
                         egui::Button::new("Salva come...").min_size(egui::vec2(button_width, 24.0)),
                     )
                     .clicked()
@@ -179,6 +213,9 @@ impl eframe::App for VideoCompressApp {
                 }
             });
 
+            if folder_mode {
+                ui.label("Solo i video nella cartella selezionata; le sottocartelle sono escluse.");
+            }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.add_enabled(
@@ -221,6 +258,11 @@ impl VideoCompressApp {
 
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
         if let Some(path) = dropped.into_iter().find_map(|file| file.path) {
+            self.mode = Some(if path.is_dir() {
+                InputMode::Folder
+            } else {
+                InputMode::File
+            });
             self.set_input_path(path);
         }
     }
@@ -232,12 +274,16 @@ impl VideoCompressApp {
 
         if let Some(receiver) = &self.receiver {
             match receiver.try_recv() {
-                Ok(Ok(output)) => {
+                Ok(CompressionEvent::Progress(status)) => {
+                    self.status = status;
+                    ctx.request_repaint();
+                }
+                Ok(CompressionEvent::Finished(Ok(output))) => {
                     self.running = false;
                     self.receiver = None;
                     self.status = format!("Compressione completata: {}", output.display());
                 }
-                Ok(Err(err)) => {
+                Ok(CompressionEvent::Finished(Err(err))) => {
                     self.running = false;
                     self.receiver = None;
                     self.status = format!("Errore: {err}");
@@ -255,6 +301,15 @@ impl VideoCompressApp {
     }
 
     fn choose_input_file(&mut self) {
+        if self.mode == Some(InputMode::Folder) {
+            if let Some(path) = FileDialog::new()
+                .set_title("Seleziona una cartella di video")
+                .pick_folder()
+            {
+                self.set_input_path(path);
+            }
+            return;
+        }
         let extensions = video_filter_extensions();
         let Some(path) = FileDialog::new()
             .set_title("Seleziona un video")
@@ -298,23 +353,29 @@ impl VideoCompressApp {
             self.output_path.clear();
             return;
         }
-        self.output_path = default_output_path(Path::new(input)).display().to_string();
+        let output = if self.mode == Some(InputMode::Folder) {
+            folder_output_path(Path::new(input))
+        } else {
+            default_output_path(Path::new(input))
+        };
+        self.output_path = output.display().to_string();
     }
 
     fn start_compression(&mut self) {
         let input = self.input_path.trim();
         if input.is_empty() {
-            self.status = "Errore: file sorgente mancante.".to_owned();
+            self.status = "Errore: sorgente mancante.".to_owned();
             return;
         }
 
         let input_path = PathBuf::from(input);
-        if !input_path.is_file() {
-            self.status = format!("Errore: file non trovato: {}", input_path.display());
+        let folder_mode = self.mode == Some(InputMode::Folder);
+        if (folder_mode && !input_path.is_dir()) || (!folder_mode && !input_path.is_file()) {
+            self.status = format!("Errore: sorgente non trovata: {}", input_path.display());
             return;
         }
 
-        if self.output_path.trim().is_empty() {
+        if folder_mode || self.output_path.trim().is_empty() {
             self.output_was_auto = true;
             self.refresh_auto_output();
         }
@@ -346,8 +407,14 @@ impl VideoCompressApp {
         self.status = "Compressione in corso...".to_owned();
 
         std::thread::spawn(move || {
-            let result = compress_video(&input_path, &output_path, &crf).map(|_| output_path);
-            let _ = tx.send(result);
+            let result = if folder_mode {
+                compress_folder(&input_path, &output_path, &crf, |status| {
+                    let _ = tx.send(CompressionEvent::Progress(status));
+                })
+            } else {
+                compress_video(&input_path, &output_path, &crf)
+            };
+            let _ = tx.send(CompressionEvent::Finished(result.map(|_| output_path)));
         });
     }
 }
@@ -377,6 +444,94 @@ fn default_output_path(input: &Path) -> PathBuf {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
         .join(file_name)
+}
+
+fn folder_output_path(input: &Path) -> PathBuf {
+    let mut name = input
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("video"))
+        .to_os_string();
+    name.push("_compressed");
+    input.with_file_name(name)
+}
+
+fn folder_video_output_path(input: &Path, output_dir: &Path) -> PathBuf {
+    let mut name = input.file_stem().unwrap_or_default().to_os_string();
+    name.push("_COMPRESSED");
+    if let Some(extension) = input.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    output_dir.join(name)
+}
+
+fn folder_videos(input: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries =
+        fs::read_dir(input).map_err(|err| format!("lettura della cartella impossibile: {err}"))?;
+    let mut videos = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("lettura del file impossibile: {err}"))?;
+        let path = entry.path();
+        if path.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    VIDEO_EXTENSIONS
+                        .iter()
+                        .any(|known| ext.eq_ignore_ascii_case(known))
+                })
+        {
+            videos.push(path);
+        }
+    }
+    videos.sort();
+    Ok(videos)
+}
+
+fn compress_folder(
+    input: &Path,
+    output: &Path,
+    crf: &str,
+    mut progress: impl FnMut(String),
+) -> Result<(), String> {
+    let videos = folder_videos(input)?;
+    if videos.is_empty() {
+        return Err("nessun video trovato nella cartella selezionata.".to_owned());
+    }
+    // Never overwrite an earlier batch or files from a partially completed batch.
+    fs::create_dir(output).map_err(|err| {
+        format!(
+            "creazione della cartella {} impossibile (se esiste già, rinominala o spostala): {err}",
+            output.display()
+        )
+    })?;
+    let mut errors = Vec::new();
+    for (index, video) in videos.iter().enumerate() {
+        progress(format!(
+            "Compressione {}/{}: {}",
+            index + 1,
+            videos.len(),
+            video.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let destination = folder_video_output_path(video, output);
+        if let Err(err) = compress_video(video, &destination, crf) {
+            // Remove the incomplete output, retaining successful videos.
+            let _ = fs::remove_file(&destination);
+            errors.push(format!("{}: {err}", video.display()));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} video su {} non compressi. I video completati sono in {}.\n{}",
+            errors.len(),
+            videos.len(),
+            output.display(),
+            errors.join("\n")
+        ))
+    }
 }
 
 fn valid_crf(crf: &str) -> bool {
@@ -508,4 +663,84 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_naming_preserves_dots_and_extension() {
+        assert_eq!(
+            folder_output_path(Path::new("/tmp/Le vacanze")),
+            PathBuf::from("/tmp/Le vacanze_compressed")
+        );
+        assert_eq!(
+            folder_video_output_path(Path::new("film.parte.1.MOV"), Path::new("out")),
+            PathBuf::from("out/film.parte.1_COMPRESSED.MOV")
+        );
+    }
+
+    #[test]
+    fn batch_compresses_videos_and_ignores_other_files_and_subfolders() {
+        let root = std::env::temp_dir().join(format!(
+            "compressor-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let input = root.join("vacanze");
+        fs::create_dir_all(input.join("sottocartella")).unwrap();
+        fs::write(input.join("note.txt"), "test").unwrap();
+        fs::write(input.join("sottocartella/altro.mp4"), "excluded").unwrap();
+        let ffmpeg = embedded_ffmpeg_path().unwrap();
+        let generated = Command::new(ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=32x32:d=0.1",
+                "-c:v",
+                "libx264",
+            ])
+            .arg(input.join("video.parte.MP4"))
+            .output()
+            .unwrap();
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        fs::copy(input.join("video.parte.MP4"), input.join("secondo.mp4")).unwrap();
+        let output = folder_output_path(&input);
+        let mut updates = Vec::new();
+        compress_folder(&input, &output, "24", |status| updates.push(status)).unwrap();
+        assert_eq!(updates.len(), 2);
+        assert!(
+            output
+                .join("video.parte_COMPRESSED.MP4")
+                .metadata()
+                .unwrap()
+                .len()
+                > 0
+        );
+        assert!(output.join("secondo_COMPRESSED.mp4").is_file());
+        assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+        assert!(compress_folder(&input, &output, "24", |_| {}).is_err());
+        fs::write(input.join("danneggiato.mp4"), "invalid video").unwrap();
+        let partial_output = root.join("parziale_compressed");
+        let error = compress_folder(&input, &partial_output, "24", |_| {}).unwrap_err();
+        assert!(error.contains("1 video su 3 non compressi"));
+        assert!(partial_output.join("secondo_COMPRESSED.mp4").is_file());
+        assert!(!partial_output.join("danneggiato_COMPRESSED.mp4").exists());
+        let empty = root.join("vuota");
+        fs::create_dir(&empty).unwrap();
+        assert!(compress_folder(&empty, &folder_output_path(&empty), "24", |_| {}).is_err());
+        assert!(!folder_output_path(&empty).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
