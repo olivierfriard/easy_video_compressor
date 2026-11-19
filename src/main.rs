@@ -232,7 +232,11 @@ impl eframe::App for VideoCompressApp {
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(!self.running, egui::Button::new("Comprimi"))
+                    .add_enabled(
+                        !self.running,
+                        egui::Button::new(egui::RichText::new("Comprimi").size(20.0))
+                            .min_size(egui::vec2(180.0, 48.0)),
+                    )
                     .clicked()
                 {
                     self.start_compression();
@@ -432,12 +436,7 @@ fn default_output_path(input: &Path) -> PathBuf {
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("video");
-    let extension = input
-        .extension()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("mp4");
-    let file_name = format!("{stem}_compressed.{extension}");
+    let file_name = format!("{stem}.compressed.mp4");
 
     input
         .parent()
@@ -457,11 +456,7 @@ fn folder_output_path(input: &Path) -> PathBuf {
 
 fn folder_video_output_path(input: &Path, output_dir: &Path) -> PathBuf {
     let mut name = input.file_stem().unwrap_or_default().to_os_string();
-    name.push("_COMPRESSED");
-    if let Some(extension) = input.extension() {
-        name.push(".");
-        name.push(extension);
-    }
+    name.push(".compressed.mp4");
     output_dir.join(name)
 }
 
@@ -574,6 +569,8 @@ fn compress_video(input: &Path, output: &Path, crf: &str) -> Result<(), String> 
         .arg("0:s")
         .arg("-map_chapters")
         .arg("0")
+        .arg("-metadata")
+        .arg("easy_video_compressor=Compressed with easy_video_compressor")
         .arg("-c:v")
         .arg(VIDEO_CODEC)
         .arg("-preset")
@@ -585,7 +582,7 @@ fn compress_video(input: &Path, output: &Path, crf: &str) -> Result<(), String> 
         .arg("-b:a")
         .arg("128k")
         .arg("-movflags")
-        .arg("+faststart")
+        .arg("+faststart+use_metadata_tags")
         .arg("-y")
         .arg(output)
         .output()
@@ -670,14 +667,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn folder_naming_preserves_dots_and_extension() {
+    fn output_naming_preserves_stem_and_uses_compressed_mp4() {
+        assert_eq!(
+            default_output_path(Path::new("/tmp/film.parte.1.MOV")),
+            PathBuf::from("/tmp/film.parte.1.compressed.mp4")
+        );
+        assert_eq!(
+            default_output_path(Path::new("video")),
+            PathBuf::from("./video.compressed.mp4")
+        );
         assert_eq!(
             folder_output_path(Path::new("/tmp/Le vacanze")),
             PathBuf::from("/tmp/Le vacanze_compressed")
         );
         assert_eq!(
             folder_video_output_path(Path::new("film.parte.1.MOV"), Path::new("out")),
-            PathBuf::from("out/film.parte.1_COMPRESSED.MOV")
+            PathBuf::from("out/film.parte.1.compressed.mp4")
         );
     }
 
@@ -696,7 +701,7 @@ mod tests {
         fs::write(input.join("note.txt"), "test").unwrap();
         fs::write(input.join("sottocartella/altro.mp4"), "excluded").unwrap();
         let ffmpeg = embedded_ffmpeg_path().unwrap();
-        let generated = Command::new(ffmpeg)
+        let generated = Command::new(&ffmpeg)
             .args([
                 "-v",
                 "error",
@@ -706,6 +711,10 @@ mod tests {
                 "color=c=blue:s=32x32:d=0.1",
                 "-c:v",
                 "libx264",
+                "-metadata",
+                "comment=Original comment",
+                "-metadata",
+                "title=Original title",
             ])
             .arg(input.join("video.parte.MP4"))
             .output()
@@ -722,21 +731,46 @@ mod tests {
         assert_eq!(updates.len(), 2);
         assert!(
             output
-                .join("video.parte_COMPRESSED.MP4")
+                .join("video.parte.compressed.mp4")
                 .metadata()
                 .unwrap()
                 .len()
                 > 0
         );
-        assert!(output.join("secondo_COMPRESSED.mp4").is_file());
+        assert!(output.join("secondo.compressed.mp4").is_file());
         assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+        let single_output = root.join("single.compressed.mp4");
+        compress_video(&input.join("video.parte.MP4"), &single_output, "24").unwrap();
+        for video in [
+            single_output,
+            output.join("video.parte.compressed.mp4"),
+            output.join("secondo.compressed.mp4"),
+        ] {
+            let metadata = Command::new(&ffmpeg)
+                .args(["-v", "error", "-i"])
+                .arg(video)
+                .args(["-f", "ffmetadata", "-"])
+                .output()
+                .unwrap();
+            assert!(
+                metadata.status.success(),
+                "{}",
+                String::from_utf8_lossy(&metadata.stderr)
+            );
+            let tags = String::from_utf8_lossy(&metadata.stdout);
+            assert!(tags.lines().any(|line| {
+                line == "easy_video_compressor=Compressed with easy_video_compressor"
+            }));
+            assert!(tags.lines().any(|line| line == "comment=Original comment"));
+            assert!(tags.lines().any(|line| line == "title=Original title"));
+        }
         assert!(compress_folder(&input, &output, "24", |_| {}).is_err());
         fs::write(input.join("danneggiato.mp4"), "invalid video").unwrap();
         let partial_output = root.join("parziale_compressed");
         let error = compress_folder(&input, &partial_output, "24", |_| {}).unwrap_err();
         assert!(error.contains("1 video su 3 non compressi"));
-        assert!(partial_output.join("secondo_COMPRESSED.mp4").is_file());
-        assert!(!partial_output.join("danneggiato_COMPRESSED.mp4").exists());
+        assert!(partial_output.join("secondo.compressed.mp4").is_file());
+        assert!(!partial_output.join("danneggiato.compressed.mp4").exists());
         let empty = root.join("vuota");
         fs::create_dir(&empty).unwrap();
         assert!(compress_folder(&empty, &folder_output_path(&empty), "24", |_| {}).is_err());
